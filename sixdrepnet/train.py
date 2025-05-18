@@ -39,7 +39,7 @@ def parse_args():
         default=80, type=int)
     parser.add_argument(
         '--batch_size', dest='batch_size', help='Batch size.',
-        default=80, type=int)
+        default=8, type=int)
     parser.add_argument(
         '--lr', dest='lr', help='Base learning rate.',
         default=0.0001, type=float)
@@ -58,6 +58,9 @@ def parse_args():
         '--output_string', dest='output_string',
         help='String appended to output snapshots.', default='', type=str)
     parser.add_argument(
+        '--output_path', dest='output_path',
+        help='Path to output snapshots.', default='output/snapshots', type=str)
+    parser.add_argument(
         '--snapshot', dest='snapshot', help='Path of model snapshot.',
         default='', type=str)
 
@@ -73,6 +76,7 @@ def load_filtered_state_dict(model, snapshot):
 
 
 if __name__ == '__main__':
+    torch.cuda.empty_cache()
 
     args = parse_args()
     cudnn.enabled = True
@@ -80,15 +84,18 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     gpu = args.gpu_id
     b_scheduler = args.scheduler
+    output_path = args.output_path
 
-    if not os.path.exists('output/snapshots'):
-        os.makedirs('output/snapshots')
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
 
     summary_name = '{}_{}_bs{}'.format(
         'SixDRepNet', int(time.time()), args.batch_size)
 
-    if not os.path.exists('output/snapshots/{}'.format(summary_name)):
-        os.makedirs('output/snapshots/{}'.format(summary_name))
+    # Construct the snapshot path using output_path
+    snapshot_path = os.path.join(output_path, summary_name)
+    if not os.path.exists(snapshot_path):
+        os.makedirs(snapshot_path)
 
     model = SixDRepNet(backbone_name='RepVGG-B1g2',
                         backbone_file='RepVGG-B1g2-train.pth',
@@ -105,12 +112,14 @@ if __name__ == '__main__':
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225])
 
-    transformations = transforms.Compose([transforms.RandomResizedCrop(size=224,scale=(0.8,1)),
-                                          transforms.ToTensor(),
+    # transformations = transforms.Compose([transforms.RandomResizedCrop(size=224,scale=(0.8,1)),
+    #                                       transforms.ToTensor(),
+    #                                       normalize])
+    transformations_xgaze = transforms.Compose([transforms.ToTensor(),
                                           normalize])
 
     pose_dataset = datasets.getDataset(
-        args.dataset, args.data_dir, args.filename_list, transformations)
+        args.dataset, args.data_dir, args.filename_list, transformations_xgaze)
 
     train_loader = torch.utils.data.DataLoader(
         dataset=pose_dataset,
@@ -132,7 +141,7 @@ if __name__ == '__main__':
     for epoch in range(num_epochs):
         loss_sum = .0
         iter = 0
-        for i, (images, gt_mat, _, _) in enumerate(train_loader):
+        for i, (images, gt_mat, _, _, cam_indices, frame_indices) in enumerate(train_loader):
             iter += 1
             images = torch.Tensor(images).cuda(gpu)
 
@@ -169,6 +178,6 @@ if __name__ == '__main__':
                       'epoch': epoch,
                       'model_state_dict': model.state_dict(),
                       'optimizer_state_dict': optimizer.state_dict(),
-                  }, 'output/snapshots/' + summary_name + '/' + args.output_string +
+                  }, output_path + '/' + summary_name + '/' + args.output_string +
                       '_epoch_' + str(epoch+1) + '.tar')
                   )

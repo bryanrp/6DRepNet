@@ -44,13 +44,17 @@ def parse_args():
                         default='', type=str)
     parser.add_argument('--batch_size',
                         dest='batch_size', help='Batch size.',
-                        default=64, type=int)
+                        default=16, type=int)
     parser.add_argument('--show_viz',
                         dest='show_viz', help='Save images with pose cube.',
                         default=False, type=bool)
     parser.add_argument('--dataset',
                         dest='dataset', help='Dataset type.',
                         default='AFLW2000', type=str)
+    parser.add_argument('--output_csv',
+                    dest='output_csv',
+                    help='Output CSV file path for predictions.',
+                    default=None, type=str)
 
 
     args = parser.parse_args()
@@ -75,18 +79,19 @@ if __name__ == '__main__':
 
     print('Loading data.')
 
-    transformations = transforms.Compose([transforms.Resize(256),
-                                          transforms.CenterCrop(
-                                              224), transforms.ToTensor(),
-                                          transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    # transformations = transforms.Compose([transforms.Resize(256),
+    #                                       transforms.CenterCrop(
+    #                                           224), transforms.ToTensor(),
+    #                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    transformations_xgaze = transforms.Compose([transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
     pose_dataset = datasets.getDataset(
-        args.dataset, args.data_dir, args.filename_list, transformations, train_mode = False)
+        args.dataset, args.data_dir, args.filename_list, transformations_xgaze, train_mode = False)
     test_loader = torch.utils.data.DataLoader(
         dataset=pose_dataset,
         batch_size=args.batch_size,
         num_workers=2)
-
 
     # Load snapshot
     saved_state_dict = torch.load(snapshot_path, map_location='cpu')
@@ -104,9 +109,13 @@ if __name__ == '__main__':
     yaw_error = pitch_error = roll_error = .0
     v1_err = v2_err = v3_err = .0
 
+    # Prepare list to collect CSV rows:
+    # Each row: [name, predicted_pitch, predicted_yaw, actual_pitch, actual_yaw]
+    results = []
+
     with torch.no_grad():
 
-        for i, (images, r_label, cont_labels, name) in enumerate(test_loader):
+        for i, (images, r_label, cont_labels, names, cam_indices, frame_indices) in enumerate(test_loader):
             images = torch.Tensor(images).cuda(gpu)
             total += cont_labels.size(0)
 
@@ -142,12 +151,12 @@ if __name__ == '__main__':
                 r_pred_deg - 360 - r_gt_deg), torch.abs(r_pred_deg + 180 - r_gt_deg), torch.abs(r_pred_deg - 180 - r_gt_deg))), 0)[0])
 
             if args.show_viz:
-                name = name[0]
+                names = names[0]
                 if args.dataset == 'AFLW2000':
-                    cv2_img = cv2.imread(os.path.join(args.data_dir, name + '.jpg'))
+                    cv2_img = cv2.imread(os.path.join(args.data_dir, names + '.jpg'))
                    
                 elif args.dataset == 'BIWI':
-                    vis = np.uint8(name)
+                    vis = np.uint8(names)
                     h,w,c = vis.shape
                     vis2 = cv2.CreateMat(h, w, cv2.CV_32FC3)
                     vis0 = cv2.fromarray(vis)
@@ -157,14 +166,36 @@ if __name__ == '__main__':
                 #utils.plot_pose_cube(cv2_img, y_pred_deg[0], p_pred_deg[0], r_pred_deg[0], size=200)
                 cv2.imshow("Test", cv2_img)
                 cv2.waitKey(5)
-                cv2.imwrite(os.path.join('output/img/',name+'.png'),cv2_img)
+                cv2.imwrite(os.path.join('output/img/',names+'.png'),cv2_img)
+
+            if args.output_csv:
+                euler_rads = utils.compute_euler_angles_from_rotation_matrices(R_pred)
+                for j in range(images.size(0)):
+                    name = names[j]  # sample name
+                    cam_index = int(cam_indices[j].item()) # cam index
+                    frame_index = int(frame_indices[j].item()) # frame index
+                    # Predicted: first element = pitch, second = yaw (in radians)
+                    pred_pitch = float(euler_rads[j, 0].cpu())
+                    pred_yaw   = float(euler_rads[j, 1].cpu())
+                    pred = f"{pred_pitch},{pred_yaw}"
+                    # Actual: from cont_labels: actual_pitch = cont_labels[j,1], actual_yaw = cont_labels[j,0]
+                    actual_pitch = float(cont_labels[j, 1].cpu())
+                    actual_yaw   = float(cont_labels[j, 0].cpu())
+                    actual = f"{actual_pitch},{actual_yaw}"
+
+                    results.append([name, pred, actual, cam_index, frame_index])
                 
         print('Yaw: %.4f, Pitch: %.4f, Roll: %.4f, MAE: %.4f' % (
             yaw_error / total, pitch_error / total, roll_error / total,
             (yaw_error + pitch_error + roll_error) / (total * 3)))
+        
+        if args.output_csv:
+            import pandas as pd
+            df_results = pd.DataFrame(results, columns=["name", "face", "gt", "cam_index", "frame_index"])
+            df_results.to_csv(args.output_csv, sep=' ', index=False)
+
+            print('CSV results written to:', args.output_csv)
 
         # print('Vec1: %.4f, Vec2: %.4f, Vec3: %.4f, VMAE: %.4f' % (
         #     v1_err / total, v2_err / total, v3_err / total,
         #     (v1_err + v2_err + v3_err) / (total * 3)))
-
-

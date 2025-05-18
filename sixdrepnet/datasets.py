@@ -303,8 +303,46 @@ class Pose_300W_LP(Dataset):
         # 122,450
         return self.length
 
+class ETHXGaze(Dataset):
+    def __init__(self, data_dir, label_path, transform, img_ext='.jpg', image_mode='RGB'):
+        # Read CSV file with whitespace as separator
+        self.df = pd.read_csv(label_path, sep='\\s+')
+
+        self.data_dir = data_dir
+        self.transform = transform
+        self.img_ext = img_ext
+
+        self.image_mode = image_mode
+        self.length = len(self.df)
+
+    def __getitem__(self, index):
+        img = Image.open(os.path.join(
+            self.data_dir, self.df['face'][index]
+        ))
+        img = img.convert(self.image_mode)
+
+        # Convert pitch and yaw to float
+        pitch, yaw = map(float, self.df['gaze'][index].split(','))
+        roll = 0.0  # Ensure roll is also float
+
+        # Get target tensors
+        R = utils.get_R(pitch, yaw, roll)
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        cont_labels = torch.FloatTensor([yaw, pitch, roll])
+        return img, torch.FloatTensor(R), cont_labels, self.df['face'][index], self.df['cam_index'][index], self.df['frame_index'][index]
+    
+    def __len__(self):
+        return self.length
+
 def getDataset(dataset, data_dir, filename_list, transformations, train_mode = True):
-    if dataset == 'Pose_300W_LP':
+    if dataset == 'ETHXGaze':
+        label_path = filename_list
+        pose_dataset = ETHXGaze(
+            data_dir, label_path, transformations)
+    elif dataset == 'Pose_300W_LP':
             pose_dataset = Pose_300W_LP(
                 data_dir, filename_list, transformations)
     elif dataset == 'AFLW2000':
